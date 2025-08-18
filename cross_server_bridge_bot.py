@@ -165,9 +165,10 @@ def check_violation_content(content: str) -> tuple[bool, str]:
     political_words = [
         "习近平", "xi jinping", "毛泽东", "邓小平", 
         "共产党", "ccp", "中共", "政府", "党委",
-        "台独", "港独", "新疆", "西藏", "天安门",
-        "六四", "法轮功", "民运", "反共", "自由",
+        "台独", "港独",
+        "六四", "法轮功", "民运", "反共", 
         "民主", "人权", "维权", "异议", "反政府"
+        "中国"， "美国"
     ]
     for word in political_words:
         if word in content_lower:
@@ -237,13 +238,20 @@ async def on_message(message):
             message.channel.id == config['source_channel_id']):
             
             # 检查审查模式
-            if config.get('audit_mode', False):
+            audit_mode = config.get('audit_mode', False)
+            print(f"桥接 {config['bridge_name']} - 审查模式: {audit_mode}")
+            
+            if audit_mode:
                 # 审查模式：只转发违规消息
                 is_violation, violation_reason = check_violation_content(message.content)
+                print(f"违规检查结果: {is_violation}, 原因: {violation_reason}")
                 if is_violation:
                     await forward_message(message, config, violation_reason)
+                else:
+                    print("消息无违规内容，不转发")
             else:
                 # 普通模式：转发所有消息
+                print("普通模式：转发消息")
                 await forward_message(message, config)
     
     # 处理其他命令
