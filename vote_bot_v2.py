@@ -214,7 +214,7 @@ async def vote_command(interaction: discord.Interaction,
 async def stats_command(interaction: discord.Interaction, 
                        用户: Optional[discord.Member] = None,
                        周期: Literal["all", "15", "30", "90"] = "all"):
-    """统计命令 - 仅管理员可用"""
+    """统计命令 - 管理权限可用"""
     
     # 检查权限
     if not check_admin_permission(interaction.user):
@@ -289,7 +289,7 @@ async def stats_command(interaction: discord.Interaction,
 async def leaderboard_command(interaction: discord.Interaction,
                              周期: Literal["all", "15", "30", "90"] = "all",
                              显示数量: int = 10):
-    """排行榜命令 - 仅管理员可用"""
+    """排行榜命令 - 管理权限可用"""
     
     # 检查权限
     if not check_admin_permission(interaction.user):
