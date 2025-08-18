@@ -37,6 +37,7 @@ def init_database():
             target_channel_id INTEGER NOT NULL,
             webhook_url TEXT,
             is_enabled BOOLEAN DEFAULT TRUE,
+            audit_mode BOOLEAN DEFAULT FALSE,
             created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
             admin_user_id INTEGER
         )
@@ -66,7 +67,7 @@ def get_bridge_configs() -> List[Dict]:
     
     cursor.execute('''
         SELECT bridge_name, source_guild_id, source_channel_id, 
-               target_guild_id, target_channel_id, webhook_url, is_enabled
+               target_guild_id, target_channel_id, webhook_url, is_enabled, audit_mode
         FROM bridge_configs 
         WHERE is_enabled = TRUE
     ''')
@@ -80,14 +81,15 @@ def get_bridge_configs() -> List[Dict]:
             'target_guild_id': row[3],
             'target_channel_id': row[4],
             'webhook_url': row[5],
-            'is_enabled': row[6]
+            'is_enabled': row[6],
+            'audit_mode': row[7] if len(row) > 7 else False
         })
     
     conn.close()
     return configs
 
 def save_bridge_config(bridge_name: str, source_guild_id: int, source_channel_id: int,
-                      target_guild_id: int, target_channel_id: int, webhook_url: str, admin_user_id: int):
+                      target_guild_id: int, target_channel_id: int, webhook_url: str, admin_user_id: int, audit_mode: bool = False):
     """保存桥接配置"""
     conn = sqlite3.connect('bridge_config.db')
     cursor = conn.cursor()
@@ -95,10 +97,10 @@ def save_bridge_config(bridge_name: str, source_guild_id: int, source_channel_id
     cursor.execute('''
         INSERT OR REPLACE INTO bridge_configs 
         (bridge_name, source_guild_id, source_channel_id, target_guild_id, 
-         target_channel_id, webhook_url, admin_user_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+         target_channel_id, webhook_url, admin_user_id, audit_mode)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ''', (bridge_name, source_guild_id, source_channel_id, target_guild_id, 
-          target_channel_id, webhook_url, admin_user_id))
+          target_channel_id, webhook_url, admin_user_id, audit_mode))
     
     conn.commit()
     conn.close()
@@ -133,6 +135,45 @@ async def create_webhook_if_needed(channel: discord.TextChannel, webhook_name: s
     except Exception as e:
         print(f"创建webhook失败: {e}")
         return None
+
+def check_violation_content(content: str) -> tuple[bool, str]:
+    """检查消息是否包含违规内容"""
+    if not content:
+        return False, ""
+    
+    content_lower = content.lower()
+    
+    # 检查特殊违禁词
+    forbidden_words = ["镜花", "蜜淫"]
+    for word in forbidden_words:
+        if word in content:
+            return True, f"包含违禁词: {word}"
+    
+    # 检查DC群组链接
+    dc_patterns = [
+        "discord.gg/",
+        "discord.com/invite/", 
+        "discordapp.com/invite/",
+        "discord.gg",
+        ".gg/"
+    ]
+    for pattern in dc_patterns:
+        if pattern in content_lower:
+            return True, "包含Discord邀请链接"
+    
+    # 检查涉政关键词
+    political_words = [
+        "习近平", "xi jinping", "毛泽东", "邓小平", 
+        "共产党", "ccp", "中共", "政府", "党委",
+        "台独", "港独", "新疆", "西藏", "天安门",
+        "六四", "法轮功", "民运", "反共", "自由",
+        "民主", "人权", "维权", "异议", "反政府"
+    ]
+    for word in political_words:
+        if word in content_lower:
+            return True, f"包含涉政内容: {word}"
+    
+    return False, ""
 
 async def send_webhook_message(webhook_url: str, content: str, username: str, avatar_url: str, embeds: List = None):
     """通过webhook发送消息"""
@@ -195,12 +236,20 @@ async def on_message(message):
         if (message.guild.id == config['source_guild_id'] and 
             message.channel.id == config['source_channel_id']):
             
-            await forward_message(message, config)
+            # 检查审查模式
+            if config.get('audit_mode', False):
+                # 审查模式：只转发违规消息
+                is_violation, violation_reason = check_violation_content(message.content)
+                if is_violation:
+                    await forward_message(message, config, violation_reason)
+            else:
+                # 普通模式：转发所有消息
+                await forward_message(message, config)
     
     # 处理其他命令
     await bot.process_commands(message)
 
-async def forward_message(message: discord.Message, config: Dict):
+async def forward_message(message: discord.Message, config: Dict, violation_reason: str = None):
     """转发消息到目标频道"""
     try:
         # 获取目标频道
@@ -242,7 +291,9 @@ async def forward_message(message: discord.Message, config: Dict):
             for embed in message.embeds:
                 embeds.append(embed.to_dict())
         
-        # 来源信息已删除 - 不再显示消息来源
+        # 添加违规提醒（仅审查模式）
+        if violation_reason:
+            content = f"🚨 **违规内容检测**: {violation_reason}\n\n{content}"
         
         # 获取或创建webhook
         webhook_url = config.get('webhook_url')
@@ -291,14 +342,16 @@ async def forward_message(message: discord.Message, config: Dict):
     源服务器id="源服务器ID",
     源频道id="源频道ID", 
     目标服务器id="目标服务器ID",
-    目标频道id="目标频道ID"
+    目标频道id="目标频道ID",
+    审查模式="是否启用审查模式（只转发违规消息）"
 )
 async def bridge_add_command(interaction: discord.Interaction,
                            桥接名称: str,
                            源服务器id: str,
                            源频道id: str,
                            目标服务器id: str,
-                           目标频道id: str):
+                           目标频道id: str,
+                           审查模式: bool = False):
     """添加桥接配置 - 仅管理员"""
     
     # 检查权限
@@ -364,7 +417,7 @@ async def bridge_add_command(interaction: discord.Interaction,
         # 保存配置
         save_bridge_config(
             桥接名称, source_guild_id, source_channel_id,
-            target_guild_id, target_channel_id, webhook_url, interaction.user.id
+            target_guild_id, target_channel_id, webhook_url, interaction.user.id, 审查模式
         )
         
         # 创建成功消息
@@ -374,12 +427,15 @@ async def bridge_add_command(interaction: discord.Interaction,
             timestamp=datetime.now()
         )
         
+        mode_text = "🛡️ 审查模式（仅转发违规消息）" if 审查模式 else "📤 普通模式（转发所有消息）"
+        
         embed.add_field(
             name="📋 配置信息",
             value=(
                 f"**桥接名称：** {桥接名称}\n"
                 f"**源频道：** {source_guild.name} #{source_channel.name}\n"
-                f"**目标频道：** {target_guild.name} #{target_channel.name}"
+                f"**目标频道：** {target_guild.name} #{target_channel.name}\n"
+                f"**工作模式：** {mode_text}"
             ),
             inline=False
         )
@@ -437,13 +493,15 @@ async def bridge_list_command(interaction: discord.Interaction):
         target_name = f"{target_guild.name} #{target_channel.name}" if target_guild and target_channel else "未知"
         
         status = "🟢 活跃" if config['is_enabled'] else "🔴 禁用"
+        mode = "🛡️ 审查模式" if config.get('audit_mode', False) else "📤 普通模式"
         
         embed.add_field(
             name=f"🌉 {config['bridge_name']}",
             value=(
                 f"**源频道：** {source_name}\n"
                 f"**目标频道：** {target_name}\n"
-                f"**状态：** {status}"
+                f"**状态：** {status}\n"
+                f"**模式：** {mode}"
             ),
             inline=False
         )
@@ -492,6 +550,77 @@ async def bridge_remove_command(interaction: discord.Interaction, 桥接名称: 
     except Exception as e:
         await interaction.response.send_message(
             f"❌ 删除桥接配置失败：{e}",
+            ephemeral=True
+        )
+
+@bot.tree.command(name="bridge_audit", description="切换桥接的审查模式（仅管理员）")
+@app_commands.describe(桥接名称="要切换审查模式的桥接配置名称")
+async def bridge_audit_command(interaction: discord.Interaction, 桥接名称: str):
+    """切换桥接审查模式 - 仅管理员"""
+    
+    # 检查权限
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message(
+            "❌ 此命令仅限管理员使用！", 
+            ephemeral=True
+        )
+        return
+    
+    try:
+        conn = sqlite3.connect('bridge_config.db')
+        cursor = conn.cursor()
+        
+        # 检查桥接是否存在
+        cursor.execute('SELECT audit_mode FROM bridge_configs WHERE bridge_name = ?', (桥接名称,))
+        result = cursor.fetchone()
+        if not result:
+            await interaction.response.send_message(
+                f"❌ 找不到名为 '{桥接名称}' 的桥接配置！",
+                ephemeral=True
+            )
+            conn.close()
+            return
+        
+        # 切换审查模式
+        current_mode = result[0] if result[0] is not None else False
+        new_mode = not current_mode
+        
+        cursor.execute('UPDATE bridge_configs SET audit_mode = ? WHERE bridge_name = ?', (new_mode, 桥接名称))
+        conn.commit()
+        conn.close()
+        
+        mode_text = "🛡️ 审查模式（仅转发违规消息）" if new_mode else "📤 普通模式（转发所有消息）"
+        
+        embed = discord.Embed(
+            title="✅ 审查模式已切换",
+            color=discord.Color.green(),
+            timestamp=datetime.now()
+        )
+        
+        embed.add_field(
+            name="🌉 桥接配置",
+            value=f"**名称：** {桥接名称}\n**新模式：** {mode_text}",
+            inline=False
+        )
+        
+        if new_mode:
+            embed.add_field(
+                name="🛡️ 审查模式说明",
+                value=(
+                    "审查模式已启用，将监控以下违规内容：\n"
+                    "• Discord邀请链接\n"
+                    "• 涉政言论关键词\n"
+                    "• 特殊违禁词：镜花、蜜淫\n\n"
+                    "只有检测到违规内容时才会转发消息！"
+                ),
+                inline=False
+            )
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        
+    except Exception as e:
+        await interaction.response.send_message(
+            f"❌ 切换审查模式失败：{e}",
             ephemeral=True
         )
 
@@ -593,6 +722,7 @@ async def bridge_help_command(interaction: discord.Interaction):
             "`/bridge_add` - 添加新的桥接配置\n"
             "`/bridge_list` - 查看所有桥接配置\n"
             "`/bridge_remove` - 删除桥接配置\n"
+            "`/bridge_audit` - 切换审查模式\n"
             "`/bridge_stats` - 查看转发统计\n"
             "`/bridge_help` - 查看帮助"
         ),
@@ -604,7 +734,7 @@ async def bridge_help_command(interaction: discord.Interaction):
         value=(
             "• **真实用户外观** - 显示原用户头像和昵称\n"
             "• **完整消息支持** - 转发文本、图片、附件\n"
-            "• **来源标识** - 显示消息来源服务器和频道\n"
+            "• **审查模式** - 可设置只转发违规消息\n"
             "• **实时转发** - 消息即时同步\n"
             "• **多桥接支持** - 可配置多个转发规则"
         ),
@@ -616,8 +746,9 @@ async def bridge_help_command(interaction: discord.Interaction):
         value=(
             "1. **获取频道ID** - 右键频道→复制链接→提取ID\n"
             "2. **添加桥接** - 使用 `/bridge_add` 命令\n"
-            "3. **测试功能** - 在源频道发送测试消息\n"
-            "4. **查看状态** - 使用 `/bridge_list` 检查配置"
+            "3. **设置审查模式** - 使用 `/bridge_audit` 切换\n"
+            "4. **测试功能** - 在源频道发送测试消息\n"
+            "5. **查看状态** - 使用 `/bridge_list` 检查配置"
         ),
         inline=False
     )
