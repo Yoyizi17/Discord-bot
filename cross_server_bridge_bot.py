@@ -242,12 +242,7 @@ async def forward_message(message: discord.Message, config: Dict):
             for embed in message.embeds:
                 embeds.append(embed.to_dict())
         
-        # 添加来源信息
-        source_info = f"\n\n*📍 来自: {message.guild.name} #{message.channel.name}*"
-        if content:
-            content += source_info
-        else:
-            content = source_info
+        # 来源信息已删除 - 不再显示消息来源
         
         # 获取或创建webhook
         webhook_url = config.get('webhook_url')
