@@ -3,7 +3,7 @@ from discord import app_commands
 import math
 
 from bingo_game import Game, Player, games
-from bingo_card_generator import generate_card_image, generate_marked_card_image
+from bingo_card_generator import generate_card_image
 from bingo_ui import LobbyView, create_lobby_embed
 
 intents = discord.Intents.default()
@@ -15,11 +15,11 @@ async def on_ready():
     print(f'Logged in as {client.user}')
     await tree.sync()
 
-@tree.command(name="bingo", description="Bingo game commands")
 class BingoCommands(app_commands.Group):
     pass
 
-bingo = BingoCommands()
+bingo = BingoCommands(name="bingo", description="Bingo game commands")
+tree.add_command(bingo)
 
 @bingo.command(name="create", description="创建一个新的宾果游戏")
 @app_commands.describe(name="游戏名称")
