@@ -1,8 +1,159 @@
 import discord
+import math
 from bingo_game import Game, Player, games
 from bingo_card_generator import generate_card_image
 
 # 在这里我们将定义所有的UI视图 (Views) 和模态框 (Modals)
+
+def create_main_menu_embed():
+    """创建主菜单的嵌入消息"""
+    embed = discord.Embed(
+        title="🎯 宾果游戏主菜单",
+        description="欢迎使用宾果游戏机器人！请选择你要进行的操作：",
+        color=0x00ff00
+    )
+    
+    embed.add_field(
+        name="🎮 创建游戏",
+        value="创建一个新的宾果游戏房间",
+        inline=False
+    )
+    
+    embed.add_field(
+        name="📝 添加词汇",
+        value="为现有游戏添加词汇列表",
+        inline=False
+    )
+    
+    embed.add_field(
+        name="📋 游戏列表",
+        value="查看当前所有可用的游戏",
+        inline=False
+    )
+    
+    embed.set_footer(text="点击下方按钮开始操作")
+    
+    return embed
+
+class CreateGameModal(discord.ui.Modal, title="创建新游戏"):
+    """创建游戏的模态框"""
+    
+    def __init__(self):
+        super().__init__()
+    
+    game_name = discord.ui.TextInput(
+        label="游戏名称",
+        placeholder="请输入游戏名称...",
+        required=True,
+        max_length=50
+    )
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        name = self.game_name.value.strip()
+        
+        if name in games:
+            await interaction.response.send_message(f"游戏 '{name}' 已存在。", ephemeral=True)
+            return
+        
+        game = Game(name=name, creator=interaction.user)
+        games[name] = game
+        
+        embed = create_lobby_embed(game)
+        view = LobbyView(game)
+        
+        await interaction.response.send_message(embed=embed, view=view)
+
+class AddWordsModal(discord.ui.Modal, title="添加词汇"):
+    """添加词汇的模态框"""
+    
+    def __init__(self):
+        super().__init__()
+    
+    game_name = discord.ui.TextInput(
+        label="游戏名称",
+        placeholder="请输入要添加词汇的游戏名称...",
+        required=True,
+        max_length=50
+    )
+    
+    words = discord.ui.TextInput(
+        label="词汇列表",
+        placeholder="请输入词汇，用逗号分隔（例如：苹果,香蕉,橙子）",
+        required=True,
+        style=discord.TextStyle.paragraph,
+        max_length=2000
+    )
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        name = self.game_name.value.strip()
+        words_input = self.words.value.strip()
+        
+        if name not in games:
+            await interaction.response.send_message(f"游戏 {name} 不存在。", ephemeral=True)
+            return
+        
+        game = games[name]
+        if interaction.user.id != game.creator_id:
+            await interaction.response.send_message("只有游戏创建者才能添加词条。", ephemeral=True)
+            return
+        
+        if game.status != "preparing":
+            await interaction.response.send_message("游戏已开始或已结束，无法添加词条。", ephemeral=True)
+            return
+        
+        word_list = [w.strip() for w in words_input.split(',') if w.strip()]
+        num_words = len(word_list)
+        dimension = int(math.sqrt(num_words))
+        
+        if dimension * dimension != num_words:
+            await interaction.response.send_message(f"词条数量必须是 N*N 的形式 (例如: 9, 16, 25)。你提供了 {num_words} 个词条。", ephemeral=True)
+            return
+        
+        game.words = word_list
+        game.dimension = dimension
+        await interaction.response.send_message(f"已为游戏 {name} 添加 {num_words} 个词条，卡片尺寸为 {dimension}x{dimension}。", ephemeral=True)
+
+class MainMenuView(discord.ui.View):
+    """主菜单视图"""
+    
+    def __init__(self):
+        super().__init__(timeout=300)
+    
+    @discord.ui.button(label="🎮 创建游戏", style=discord.ButtonStyle.green)
+    async def create_game_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = CreateGameModal()
+        await interaction.response.send_modal(modal)
+    
+    @discord.ui.button(label="📝 添加词汇", style=discord.ButtonStyle.primary)
+    async def add_words_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = AddWordsModal()
+        await interaction.response.send_modal(modal)
+    
+    @discord.ui.button(label="📋 游戏列表", style=discord.ButtonStyle.secondary)
+    async def game_list_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not games:
+            await interaction.response.send_message("当前没有任何游戏。", ephemeral=True)
+            return
+        
+        embed = discord.Embed(
+            title="📋 当前游戏列表",
+            color=0x00ff00
+        )
+        
+        for game_name, game in games.items():
+            status_text = {
+                "preparing": "⏳ 准备中",
+                "started": "🎮 游戏进行中",
+                "finished": "🏁 游戏已结束"
+            }.get(game.status, "❓ 未知状态")
+            
+            embed.add_field(
+                name=f"🎯 {game_name}",
+                value=f"状态: {status_text}\n创建者: <@{game.creator_id}>\n参与者: {len(game.players)}人\n词汇: {len(game.words)}个",
+                inline=True
+            )
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 def create_lobby_embed(game: Game):
     """创建一个游戏大厅的嵌入消息"""
